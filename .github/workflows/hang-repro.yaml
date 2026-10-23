@@ -1,0 +1,74 @@
+name: hang-repro
+
+# Reproduction for kubeflow/trainer#4240: run the local-container-mnist training
+# setup many times on two PyTorch images and capture stack dumps when a run hangs.
+on:
+  push:
+    branches: [repro/4240-hang]
+
+permissions:
+  contents: read
+
+jobs:
+  repro:
+    name: ${{ matrix.torch }} shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        torch: ["2.10.0", "2.13.0"]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        include:
+          - torch: "2.10.0"
+            image: pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime
+          - torch: "2.13.0"
+            image: pytorch/pytorch:2.13.0-cuda13.0-cudnn9-runtime
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space for the CUDA runtime image
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker system prune -af >/dev/null
+          df -h / | tail -1
+
+      - name: Pull image and record versions
+        run: |
+          docker pull -q "${{ matrix.image }}"
+          docker run --rm "${{ matrix.image }}" bash -lc \
+            'PIP_DISABLE_PIP_VERSION_CHECK=1 python -m pip install -q --user torchvision >/dev/null 2>&1; python -c "import torch, torchvision, sys; print(\"python\", sys.version.split()[0], \"torch\", torch.__version__, \"torchvision\", torchvision.__version__)"' \
+            | tee versions.txt
+          nproc; free -g | head -2
+
+      - name: Run until the time budget is spent
+        run: |
+          chmod +x repro/run_once.sh
+          end=$(( $(date +%s) + 290*60 ))
+          i=0
+          while [ "$(date +%s)" -lt "$end" ]; do
+            i=$((i + 1))
+            timeout 1800 ./repro/run_once.sh "${{ matrix.image }}" "s${{ matrix.shard }}-$i" | grep RESULT | tee -a results.txt || echo "RESULT s${{ matrix.shard }}-$i - KILLED at 1800s" | tee -a results.txt
+          done
+          echo "runs=$(wc -l < results.txt) ok=$(grep -c ' OK ' results.txt) slow=$(grep -c ' SLOW ' results.txt) hang=$(grep -c ' HANG ' results.txt) nofinish=$(grep -c ' NOFINISH ' results.txt) failed=$(grep -c ' FAILED ' results.txt) error=$(grep -c ' ERROR ' results.txt) killed=$(grep -c ' KILLED ' results.txt)" | tee counts.txt
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### torch ${{ matrix.torch }} shard ${{ matrix.shard }}"
+            cat versions.txt counts.txt 2>/dev/null
+            grep -E ' (SLOW|HANG|NOFINISH|FAILED|ERROR|KILLED) ' results.txt 2>/dev/null || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: repro-${{ matrix.torch }}-shard${{ matrix.shard }}
+          path: |
+            results.txt
+            counts.txt
+            versions.txt
+            diag-*
+          if-no-files-found: ignore
+          retention-days: 30
