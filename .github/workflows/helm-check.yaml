@@ -27,6 +27,7 @@ jobs:
           git diff --exit-code -- charts/
       - name: Render the config with and without tls
         run: |
+          ./bin/helm dependency build charts/kubeflow-trainer >/dev/null
           ./bin/helm template t charts/kubeflow-trainer --show-only templates/manager/configmap.yaml > default.yaml
           ./bin/helm template t charts/kubeflow-trainer --show-only templates/manager/configmap.yaml \
             --set-string manager.config.tls.minVersion=1.3 \
