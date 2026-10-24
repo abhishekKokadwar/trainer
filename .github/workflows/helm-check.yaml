@@ -1,0 +1,37 @@
+name: helm-check
+
+# Runs the Trainer chart checks for a branch of this fork on a GitHub-hosted runner,
+# since the upstream test-helm workflow needs the CNCF runners.
+on:
+  push:
+    branches: [check/helm-tls-options]
+
+permissions:
+  contents: read
+
+jobs:
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/helm-tls-options
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Helm unit tests
+        run: make helm-unittest
+      - name: helm-docs leaves the README unchanged
+        run: |
+          make helm-docs
+          git diff --exit-code -- charts/
+      - name: Render the config with and without tls
+        run: |
+          ./bin/helm template t charts/kubeflow-trainer --show-only templates/manager/configmap.yaml > default.yaml
+          ./bin/helm template t charts/kubeflow-trainer --show-only templates/manager/configmap.yaml \
+            --set-string manager.config.tls.minVersion=1.3 \
+            --set 'manager.config.tls.nextProtos={h2,http/1.1}' > tls.yaml
+          echo "--- default (tail)"; tail -12 default.yaml
+          echo "--- with tls (tail)"; tail -16 tls.yaml
+          ! grep -q "tls:" default.yaml
+          grep -q 'minVersion: "1.3"' tls.yaml
