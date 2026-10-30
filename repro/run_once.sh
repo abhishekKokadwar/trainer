@@ -19,8 +19,11 @@ dump() { # $1 = label
   local d="diag-$job"; mkdir -p "$d"
   for n in 0 1; do
     docker exec "$job-node-$n" ps -eo pid,ppid,stat,etime,wchan:32,cmd > "$d/$1-ps-node-$n.txt" 2>&1
+    # Per-thread names and wait channels for every python process.
+    docker exec "$job-node-$n" bash -c 'for p in $(pgrep -f "python|torchrun"); do echo "=== PID $p: $(tr "\0" " " </proc/$p/cmdline | cut -c1-120)"; for t in /proc/$p/task/*; do echo "  tid=$(basename $t) comm=$(cat $t/comm) state=$(awk "/^State/{print \$2}" $t/status) wchan=$(cat $t/wchan)"; done; done' \
+      > "$d/$1-threads-node-$n.txt" 2>&1
     docker run --rm --pid=container:"$job-node-$n" --cap-add SYS_PTRACE "$IMG" bash -lc \
-      'pip install -q py-spy >/dev/null 2>&1; for p in $(pgrep -f "python|torchrun"); do echo "=== PID $p: $(tr "\0" " " </proc/$p/cmdline)"; py-spy dump --native --locals --pid $p 2>&1; done' \
+      'PIP_BREAK_SYSTEM_PACKAGES=1 python -m pip install -q --disable-pip-version-check py-spy 2>&1 | tail -3; export PATH=$HOME/.local/bin:$PATH; command -v py-spy >/dev/null || { echo "PYSPY-MISSING"; exit 0; }; for p in $(pgrep -f "python|torchrun"); do echo "=== PID $p: $(tr "\0" " " </proc/$p/cmdline | cut -c1-120)"; py-spy dump --native --locals --pid $p 2>&1; done' \
       > "$d/$1-pyspy-node-$n.txt" 2>&1
   done
 }

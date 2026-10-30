@@ -17,11 +17,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        torch: ["2.10.0", "2.13.0"]
+        # Run 1 (40029567562) compared 2.10.0 and 2.13.0: 0/3951 vs 104/3178 hangs.
+        # This run collects stack dumps from 2.13.0 only.
+        torch: ["2.13.0"]
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
         include:
-          - torch: "2.10.0"
-            image: pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime
           - torch: "2.13.0"
             image: pytorch/pytorch:2.13.0-cuda13.0-cudnn9-runtime
     steps:
@@ -41,10 +41,18 @@ jobs:
             | tee versions.txt
           nproc; free -g | head -2
 
+      - name: Check py-spy works from a sidecar
+        run: |
+          docker run -d --name target "${{ matrix.image }}" python -c "import time; time.sleep(600)"
+          docker run --rm --pid=container:target --cap-add SYS_PTRACE "${{ matrix.image }}" bash -lc \
+            'PIP_BREAK_SYSTEM_PACKAGES=1 python -m pip install -q --disable-pip-version-check py-spy 2>&1 | tail -3; export PATH=$HOME/.local/bin:$PATH; py-spy dump --pid $(pgrep -f "time.sleep")' | tee pyspy-check.txt
+          docker rm -f target >/dev/null
+          grep -q "time.sleep\|<module>" pyspy-check.txt
+
       - name: Run until the time budget is spent
         run: |
           chmod +x repro/run_once.sh
-          end=$(( $(date +%s) + 290*60 ))
+          end=$(( $(date +%s) + 120*60 ))
           i=0
           while [ "$(date +%s)" -lt "$end" ]; do
             i=$((i + 1))
@@ -69,6 +77,7 @@ jobs:
             results.txt
             counts.txt
             versions.txt
+            pyspy-check.txt
             diag-*
           if-no-files-found: ignore
           retention-days: 30
